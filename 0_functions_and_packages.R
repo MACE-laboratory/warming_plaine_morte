@@ -42,8 +42,6 @@ PCA_label_conversion <- c(
   "Oxalate_scaled" = "Oxalate", "Acetate_scaled" = "Acetate",
   "Citrate_scale" = 'Citrate')
 
-setwd('~/Documents/MACE/EVO_study')
-
 load_mags_data <- function(){
   ab_tab = read.csv('data/mags/mags_abundances.tsv', sep='\t')
   tx_tab = read.csv('data/mags/gtdbtk.bac120.summary.tsv', sep='\t')
