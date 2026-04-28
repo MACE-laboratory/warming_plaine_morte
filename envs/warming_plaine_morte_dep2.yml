@@ -1,0 +1,16 @@
+name: warming_plaine_morte_dep2
+channels:
+  - r
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - r-base=4.4
+  - r-essentials=4.4
+  - r-ggplot2=4.0.1
+  - r-tidyverse=2.0.0
+  - r-devtools=2.4.6
+  - bioconductor-msnbase=2.32.0
+  - bioconductor-deseq2=4.4.0
+  - bioconductor-tcseq=1.30.0
+  - r-reticulate=1.44.1

@@ -84,7 +84,7 @@ load_mags_data <- function(){
  return(list(raw_table=ab_tab, relab_table=relab_tab, clr_table=clr_tab, mag_info=mag_info)) 
 }
 
-load_meta_data <- function(batch_size = 5) {
+load_meta_data <- function() {
   # Check for precomputed file
   if (file.exists("data/ko_table.tsv")) {
     message("Loading existing KO abundance table from data/ko_table.tsv")
@@ -259,7 +259,29 @@ load_16sr_data <- function(){
   relab_tab_with_scalar[relab_tab_with_scalar == 0] <- min(relab_tab_with_scalar[relab_tab_with_scalar > 0])
   clr_tab = clr(relab_tab_with_scalar)
   
-  return(list(raw_table=otu_table, relab_table=relab_tab, clr_table=clr_tab, tax_table=tax_table)) 
+  # rarefaction
+  rarefy_depth <- 8000
+  
+  rar_table <- apply(otu_table, 2, function(x){
+    if(sum(x) < rarefy_depth){
+      # return NA or keep original (choose behavior)
+      return(rep(NA, length(x)))
+    } else {
+      probs <- x / sum(x)
+      as.vector(rmultinom(1, size = rarefy_depth, prob = probs))
+    }
+  })
+  
+  rownames(rar_table) <- rownames(otu_table)
+  colnames(rar_table) <- colnames(otu_table)
+  
+  to_keep = colnames(rar_table)[endsWith(colnames(rar_table), suffix = '_24')]
+  otu_table = otu_table[,to_keep]
+  relab_tab = relab_tab[,to_keep]
+  clr_tab = clr_tab[,to_keep]
+  rar_table = rar_table[,to_keep]
+  
+  return(list(raw_table=otu_table, relab_table=relab_tab, clr_table=clr_tab, rar_table=rar_table, tax_table=tax_table)) 
 }
 
 load_metadata <- function(){
