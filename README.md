@@ -39,75 +39,62 @@ Environment YAML files (`*.yml` / `*.yaml`) are included in the repository. Crea
 
 ```bash
 # Example (replace with the actual env file paths in this repo)
-conda env create -f <ENV_FILE_1>.yml
-conda env create -f <ENV_FILE_2>.yml
+conda env create -f envs/warming_plaine_morte.yml
+conda env create -f envs/warming_plaine_morte_dep2.yml
 ```
 
 If you use mamba:
 
 ```bash
-mamba env create -f <ENV_FILE_1>.yml
-mamba env create -f <ENV_FILE_2>.yml
+mamba env create -f envs/warming_plaine_morte.yml
+mamba env create -f envs/warming_plaine_morte_dep2.yml
 ```
 
 ### Activate an env
 
+For most scripts use:
 ```bash
-conda activate <ENV_NAME>
+conda activate warming_plaine_morte
 ```
 
-## 4) Important: `dep2` must be installed with `devtools` (proteins normalization/imputation)
+For the 6_a_imput_normalise_proteins.R script use:
+```bash
+conda activate warming_plaine_morte_dep2
+```
+
+## 4) Important: `dep2` must be installed with `devtools` (proteins normalization/imputation) after conda installation
 
 The proteins normalization/imputation step requires the R package **`dep2`**, installed from source (GitHub) using `devtools`.
 
-After activating the conda environment you use for the proteomics step, open R and run:
-
-```r
-install.packages("devtools")
-devtools::install_github("vitek-lab/dep2")  # update if the script points to a different dep2 repo
-```
+After activating the conda environment you can run the `6_a_imput_normalise_proteins.R` script that installs **`dep2`** with devtools before loading it to process the proteomics data using dep2.
 
 Notes:
 - On some systems, `devtools` requires a compiler toolchain (Rtools on Windows, Xcode Command Line Tools on macOS, `build-essential` on Linux).
 
 ## 5) Run the analysis (R scripts)
 
-All R scripts should be run in order, from `0_...` through `7_...`.
+All R scripts should be run in order, from `1_...` through `7_...`.
 
-### Option A — run from the command line
+The R script `0_functions_and_packages.R` is loaded by others, it serves as a library loader and includes all custom functions.
 
-Activate the appropriate conda environment, then run:
+Activate the `warmin_plaine_morte` conda environment, then run:
 
 ```bash
-# Example: run all numbered scripts in order (adjust if your naming differs)
-Rscript 0_*.R
-Rscript 1_*.R
-Rscript 2_*.R
-Rscript 3_*.R
-Rscript 4_*.R
-Rscript 5_*.R
-Rscript 6_*.R
-Rscript 7_*.R
+# Example: run all the following numbered scripts in that order
+Rscript 1_PCA_temperature.R
+Rscript 2_Abundance_Barplots_EVO.R
+Rscript 3_Microbiome_alpha_diversity.R
+Rscript 4_Microbiome_beta_diversity.R
+Rscript 5_Differential_abundance_MAGs_EVO.R
+Rscript 6_b_functional_differential_abundances.R
+Rscript 7_modelling_gas_fluxes.R
 ```
-
-If there are multiple scripts per number, run them in the intended order (e.g., by filename).
-
-### Option B — run interactively
-
-Open R / RStudio (inside the active conda env) and source the scripts in order from `0_...` to `7_...`.
 
 ## 6) Outputs
 
 By default, scripts may write outputs to locations such as:
-- `results/`
-- `figures/`
-- `tables/`
-
-If these folders do not exist, create them:
-
-```bash
-mkdir -p results figures tables
-```
+- `stats/` will contain tables and models' summaries in txt or tsv/csv formats.
+- `figures/` will contain named figures in pdf format.
 
 ## Troubleshooting
 
