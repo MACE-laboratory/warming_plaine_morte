@@ -1,4 +1,4 @@
-setwd('~/Documents/MACE/EVO_study/warming_plaine_morte')
+setwd('~/Documents/MACE/warming_plaine_morte')
 
 source('0_functions_and_packages.R')
 
@@ -29,6 +29,56 @@ metadata_prot = metadata %>% filter(Sample %in% colnames(protein_kos))
 protein_kos <- protein_kos[, match(metadata_prot$Sample, colnames(protein_kos))]
 protein_kos <- protein_kos[, match(metadata_prot$Sample, colnames(protein_kos))]
 all(metadata_prot$Sample == colnames(protein_kos))
+
+
+# correlation genetic potential ~ proteins intensities
+protein_long <- protein_kos %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("KO") %>%
+  pivot_longer(
+    cols = -KO,
+    names_to = "sample",
+    values_to = "protein_intensity"
+  )
+protein_long$sample = gsub('Control_', '', protein_long$sample)
+protein_long$sample = gsub('Warming_', '', protein_long$sample)
+
+meta_long <- loaded_meta$ko_clr_table %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("KO") %>%
+  pivot_longer(
+    cols = -KO,
+    names_to = "sample",
+    values_to = "metaG_CLR"
+  )
+
+comparison <- inner_join(
+  protein_long,
+  meta_long,
+  by = c("KO", "sample")
+)
+
+ko_correlations <- comparison %>%
+  group_by(KO) %>%
+  summarise(
+    n = sum(complete.cases(protein_intensity, metaG_CLR)),
+    correlation = cor(
+      protein_intensity,
+      metaG_CLR,
+      method = "spearman",
+      use = "complete.obs"
+    ),
+    .groups = "drop"
+  )
+
+ggplot(ko_correlations, aes(x = correlation)) +
+  geom_histogram(bins = 30) +
+  theme_classic() +
+  labs(
+    x = "Spearman correlation",
+    y = "Number of KOs",
+    title = "Correlation between metaG abundance and protein intensity"
+  )
 
 # ============================================================================
 create_nmds_with_envfit <- function(abundance_table, metadata, title_name, top_n = 10) {
@@ -355,7 +405,7 @@ fit_one_gam_pvalue <- function(
     feature_values,
     feature_name,
     metadata,
-    n_perm = 200
+    n_perm = 999
 ) {
   set.seed(23)
   
@@ -425,13 +475,13 @@ for (i in 1:nrow(prot_data)){
 results %>% arrange(-pval)
 results$padj <- p.adjust(results$pval, method = "fdr")
 
-results %>% filter(padj < 0.05)
+results %>% filter(perm_p < 0.05)
 write.table(results, file = 'stats/proteins_diff_abundance_bysoiltemp_fdr.csv', 
             quote = F, row.names = T, sep = ',')
 
 
 # Plotting diff ab
-results_kos = out_kos$res
+results_kos = out_kos$res 
 results_prots = results
 
 results_kos = read.table('stats/ko_diff_abundance_bysoiltemp_fdr.csv', sep = ',')

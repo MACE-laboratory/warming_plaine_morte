@@ -1,6 +1,6 @@
 # Warming Plaine Morte — reproduction code
 
-This repository contains R scripts and supporting configuration to reproduce the study analyses.
+R scripts to reproduce the figures and statistics of the *warming Plaine Morte* study.
 
 ## 1) Get the code
 
@@ -9,94 +9,78 @@ git clone https://github.com/MACE-laboratory/warming_plaine_morte.git
 cd warming_plaine_morte
 ```
 
-## 2) Add the data from Zenodo
+## 2) Add the data (Zenodo)
 
-The repository expects a `data/` directory that is **not versioned in Git**.
-
-1. Download the Zenodo archive for this study: **<ZENODO DOI/LINK HERE>**
-2. Unzip it
-3. Copy/merge the provided `data/` folder into the repository root so you have:
+Download the archive **<ZENODO DOI/LINK HERE>** and unpack it so that `data/` sits in the repository root (it is not versioned in Git):
 
 ```text
 warming_plaine_morte/
   data/
-  (R scripts ...)
-  (conda env files ...)
+  envs/
+  figures/   (created by the scripts)
+  stats/     (created by the scripts)
+  *.R
 ```
 
-If your Zenodo download contains a different folder name, rename it to `data`.
+## 3) Software environments
 
-## 3) Install conda environments
+Two conda environments built from conda-forge + bioconda (do **not** use the `r`/`defaults` channels). If your conda adds `defaults` from its own config, run once `conda config --set channel_priority strict`. Use `mamba`/`micromamba` if you have it; the commands are identical. Both env files were solved for **osx-arm64** (Apple Silicon) and linux-64.
 
-This project uses conda environments for reproducible execution.
-
-### Prerequisites
-- Conda (Miniconda or Anaconda), or Mambaforge recommended.
-- (Optional but faster) `mamba` installed.
-
-### Create the envs
-Environment YAML files (`*.yml` / `*.yaml`) are included in the repository. Create the environments from those files (replace the filenames below with the ones present in this repo):
+| env | used by | contents |
+|---|---|---|
+| `warming_plaine_morte` | every script **except** 6_a2 | R 4.4, tidyverse, vegan, mgcv, phyloseq, ANCOMBC, … |
+| `warming_plaine_morte_dep2` | `6_a2_impute_normalise_proteins.R` only | R 4.4 + DEP2 and its Bioconductor dependencies |
 
 ```bash
-# Example (replace with the actual env file paths in this repo)
+# main environment
 conda env create -f envs/warming_plaine_morte.yml
-conda env create -f envs/warming_plaine_morte_dep2.yml
-```
-
-If you use mamba:
-
-```bash
-mamba env create -f envs/warming_plaine_morte.yml
-mamba env create -f envs/warming_plaine_morte_dep2.yml
-```
-
-### Activate an env
-
-For most scripts use:
-```bash
 conda activate warming_plaine_morte
-```
+Rscript envs/install_github_packages.R main     # ANCOMBC, PCAtest, EcolUtils (GitHub) + gratia, khroma, spaa, metacoder, taxonomizr (CRAN)
+conda deactivate
 
-For the 6_a_imput_normalise_proteins.R script use:
-```bash
+# DEP2 environment
+conda env create -f envs/warming_plaine_morte_dep2.yml
 conda activate warming_plaine_morte_dep2
+Rscript envs/install_github_packages.R dep2     # DEP2 (GitHub) + fdrtool (CRAN)
+conda deactivate
 ```
 
-## 4) Important: `dep2` must be installed with `devtools` (proteins normalization/imputation) after conda installation
+Notes
+* GitHub and CRAN-only packages (`gratia`, `khroma`, `spaa`, `metacoder`, `taxonomizr`; `fdrtool` for dep2 — several have no conda build on Apple Silicon) are installed by `install_github_packages.R` at pinned commits / a dated CRAN snapshot. This needs internet and a compiler toolchain (the env provides one).
+* The ANCOMBC pin is the last `@bugfix` commit that supports R 4.4. **Check it matches the version used for the paper** (`packageDescription("ANCOMBC")`), and edit the pin if not.
+* Bioconductor 3.20 is used on purpose: ggtree ≥ 4 requires ggplot2 ≥ 4, whereas the scripts were written for ggplot2 3.5.
 
-The proteins normalization/imputation step requires the R package **`dep2`**, installed from source (GitHub) using `devtools`.
+### RStudio
+RStudio is not distributed through conda. Install it from posit.co, then make it use the conda R:
 
-After activating the conda environment you can run the `6_a_imput_normalise_proteins.R` script that installs **`dep2`** with devtools before loading it to process the proteomics data using dep2.
+* macOS/Linux: `conda activate warming_plaine_morte && export RSTUDIO_WHICH_R=$(which R) && open -a RStudio warming_plaine_morte.Rproj` (Linux: `rstudio warming_plaine_morte.Rproj`)
+* Windows: Tools ▸ Global Options ▸ General ▸ R version ▸ choose `<conda>/envs/warming_plaine_morte/bin/R`
 
-Notes:
-- On some systems, `devtools` requires a compiler toolchain (Rtools on Windows, Xcode Command Line Tools on macOS, `build-essential` on Linux).
+Open `warming_plaine_morte.Rproj` so the working directory is the repository root. For `6_a2_…` do the same with the `warming_plaine_morte_dep2` env.
 
-## 5) Run the analysis (R scripts)
+## 4) Run the analysis
 
-All R scripts should be run in order, from `1_...` through `7_...`.
-
-The R script `0_functions_and_packages.R` is loaded by others, it serves as a library loader and includes all custom functions.
-
-Activate the `warmin_plaine_morte` conda environment, then run:
+All scripts must be run **from the repository root**. `0_functions_and_packages.R` is sourced by the others (packages, loaders, output helpers); do not run it alone.
 
 ```bash
-# Example: run all the following numbered scripts in that order
-Rscript 1_PCA_temperature.R
-Rscript 2_Abundance_Barplots_EVO.R
-Rscript 3_Microbiome_alpha_diversity.R
-Rscript 4_Microbiome_beta_diversity.R
-Rscript 5_Differential_abundance_MAGs_EVO.R
-Rscript 6_b_functional_differential_abundances.R
-Rscript 7_modelling_gas_fluxes.R
+bash run_all.sh        # runs everything in order and switches env for the DEP2 step
 ```
 
-## 6) Outputs
+Order and environment:
 
-By default, scripts may write outputs to locations such as:
-- `stats/` will contain tables and models' summaries in txt or tsv/csv formats.
-- `figures/` will contain named figures in pdf format.
+| script | env |
+|---|---|
+| `1_PCA_temperature.R` … `5_Differential_abundance_MAGs_EVO.R` | main |
+| `6_a1_extract_mag_genes.R` (MAG genes + annotation for the proteomics) | main |
+| `6_a2_impute_normalise_proteins.R` (DEP2 filtering / VSN / KNN) | **dep2** |
+| `6_b_…`, `7_…`, `8_…`, `9_…`, `10_…`, `11_…` | main |
+
+## 5) Outputs
+
+* `figures/` — `Fig_N.pdf/.png` (main), `SFig_N.pdf/.png` (supplementary). Names are defined in one place: `FIGURE_REGISTRY` in `0_functions_and_packages.R`.
+* `stats/` — `NN_<analysis>_<detail>.csv|txt`, `NN` = script number; `NN_sessionInfo.txt` records package versions.
 
 ## Troubleshooting
-
-- **`data/` missing**: ensure the Zenodo download has been placed at `./data`.
-- **`dep2` install fails**: install system build tools and retry; then verify `library(dep2)` works.
+* **`data/` missing** — unpack the Zenodo archive into `./data`.
+* **"no package called GenomeInfoDbData"** — the bioconda post-link download did not run; `Rscript envs/install_github_packages.R <main|dep2>` retries it (needs internet).
+* **Rplots.pdf appears** — a plot was drawn to the default device; delete it, it is git-ignored.

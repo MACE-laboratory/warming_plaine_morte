@@ -1,191 +1,111 @@
-setwd('~/Documents/MACE/EVO_study/warming_plaine_morte')
-source('0_functions_and_packages.R')
-library(ANCOMBC)
-library(tidyverse)
-library(paletteer)
+################################################################################
+# 5_Differential_abundance_MAGs_EVO.R
+#
+# Differential abundance of MAGs, classes and genera with ANCOM-BC2, by
+#   (a) soil temperature (continuous, scaled)   and   (b) Condition (warming vs control)
+# Random effects: (1 | Replicate) + (1 | Replicate/year_season)
+# Then: forest plots + class-level ridgeline plots of the log-fold changes.
+#
+# Inputs : data/mags/*  (+ data/mags/mags_class.csv written by 2_Abundance_Barplots_EVO.R)
+# Outputs: figures/Fig_4, SFig_12, SFig_13   (.pdf + .png)
+#          stats/05_da_<mags|classes|genera>_<soiltemp|condition>_ancombc2.csv
+#          stats/05_ridgeline_*.csv, stats/05_forest_*.csv
+#
+# The ANCOM-BC2 part is slow (hours). The plotting part ("Plots") only needs the
+# stats/05_da_*_soiltemp_ancombc2.csv files, so it can be re-run on its own.
+################################################################################
+source('0_functions_and_packages.R')   # run from the repository root
 library(ggridges)
-library(ggpubr)
-library(ggthemes)
 
-# loading functions
+N_CORES <- 5   # parallel workers for ancombc2()
+
 loaded_mags = load_mags_data()
-metadata = load_metadata()
-metadata = check_normality_change(metadata, c("Temp_soil","Temp_air","Luminosity","CH4_Flux","CO2_Flux","Water_Content_Field",
-                                              "TC","TOC","pH","Water_Content_Lab","F.","NO3.","Cl.",              
-                                              "NO2.","PO4.","SO4.","Br.","Li.","NH4.","Ca2.",          
-                                              "Sr2.","Na.","Mg2.","K.","Formate","Malate","Propionate",
-                                              "Citrate","Lactate","Butyrate","Oxalate","Acetate","TIN","Other_Anions",
-                                              "Other_Cations","Grouped_OC"))
-metadata$Aspect = 'North'
-metadata$Aspect[metadata$Replicate %in% c('C','D','E')] = 'South'
-metadata$OTC = 'No'
-metadata$OTC[metadata$Replicate %in% c('A','B','C')] = 'Yes'
-
-#####################
-### Load the data ###
-#####################
+metadata = prepare_metadata()
 rownames(metadata) = metadata$Sample
-metadata$year_season = map_chr(1:nrow(metadata), function(i) paste0(metadata$Year[i],
-                                                                    metadata$Season[i], 
-                                                                    collapse = '_'))
+# nesting factor for the random effects
+metadata$year_season = paste0(metadata$Year, metadata$Season)
 
-# DA MAGs
+################################################################################
+# ANCOM-BC2
+################################################################################
+
+# MAG pseudo-count table: CoverM trimmed means / smallest non-zero value, rounded
+# to integers, columns ordered as in the metadata.
 min_val = min(loaded_mags$raw_table[loaded_mags$raw_table > 0])
 mags_table = as.data.frame(lapply(loaded_mags$raw_table , function(x) round(x / min_val)))
 mags_table[is.na(mags_table)] = 0
 mags_table = mags_table[,colnames(mags_table) %in% metadata$Sample]
 mags_table <- mags_table[, match(metadata$Sample, colnames(mags_table))]
 rownames(mags_table) = loaded_mags$mag_info$MAG
-all(metadata$Sample == colnames(mags_table))
+stopifnot(all(metadata$Sample == colnames(mags_table)))
 
-out_mags = ancombc2(data = mags_table, 
-                    meta_data = metadata,
-                    fix_formula = "Temp_soil_scaled", rand_formula = "(1|Replicate) + (1 | Replicate/year_season)",
-                    p_adj_method = 'fdr', struc_zero = FALSE, 
-                    prv_cut = 0, lib_cut = 0, s0_perc = 0.05,
-                    alpha = 0.05, n_cl = 5, verbose = TRUE)
-table(out_mags$res$diff_Temp_soil_scaled)
-table(out_mags$res$passed_ss_Temp_soil_scaled)
-table(out_mags$res$passed_ss_Temp_soil_scaled, out_mags$res$diff_Temp_soil_scaled)
-write.table(out_mags$res, file = 'stats/mag_diff_abundance_bysoiltemp_fdr.csv', 
-            quote = F, row.names = T, sep = ',')
-
-# DA Classes
+# phyloseq object (counts + taxonomy + metadata) for the class / genus-level runs
 mags_tax_mat = loaded_mags$mag_info[,c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species")]
 rownames(mags_tax_mat) = loaded_mags$mag_info$MAG
+physeq = phyloseq(otu_table(mags_table, taxa_are_rows = TRUE), tax_table(as.matrix(mags_tax_mat)))
+physeq = merge_phyloseq(physeq, sample_data(metadata))
 
-META = sample_data(metadata)
-OTU = otu_table(mags_table, taxa_are_rows = TRUE)
-TAX = tax_table(as.matrix(mags_tax_mat))
-physeq = phyloseq(OTU, TAX)
-physeq = merge_phyloseq(physeq, META)
+# Run ANCOM-BC2 for one fixed effect, print the diff / sensitivity-score tables,
+# and save the full result table. `level`: NULL = MAGs, or 'Class' / 'Genus'.
+run_ancombc2 <- function(variable, level_name, level = NULL, iter_control = NULL) {
+  args <- list(fix_formula = variable,
+               rand_formula = "(1|Replicate) + (1 | Replicate/year_season)",
+               p_adj_method = 'fdr', struc_zero = FALSE,
+               prv_cut = 0, lib_cut = 0, s0_perc = 0.05,
+               alpha = 0.05, n_cl = N_CORES)
+  if (is.null(level)) {
+    args <- c(list(data = mags_table, meta_data = metadata), args)
+  } else {
+    args <- c(list(data = physeq, tax_level = level), args)
+  }
+  if (is.null(iter_control)) args$verbose <- TRUE else args$iter_control <- iter_control
 
-out_class = ancombc2(data = physeq, tax_level = "Class",
-                     fix_formula = "Temp_soil_scaled", rand_formula = "(1|Replicate) + (1 | Replicate/year_season)",
-                     p_adj_method = 'fdr', struc_zero = FALSE, 
-                     prv_cut = 0, lib_cut = 0, s0_perc = 0.05,
-                     alpha = 0.05, n_cl = 5, verbose = TRUE)
-table(out_class$res$diff_Temp_soil_scaled)
-table(out_class$res$passed_ss_Temp_soil_scaled)
-table(out_class$res$diff_Temp_soil_scaled, out_class$res$passed_ss_Temp_soil_scaled)
-write.table(out_class$res, file = 'stats/classes_diff_abundance_bysoiltemp_fdr.csv', 
-            quote = F, row.names = T, sep = ',')
+  out <- do.call(ancombc2, args)
 
-# DA Genera
-mags_tax_mat = loaded_mags$mag_info[,c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species")]
-rownames(mags_tax_mat) = loaded_mags$mag_info$MAG
+  diff_col <- paste0("diff_", variable); ss_col <- paste0("passed_ss_", variable)
+  print(table(out$res[[diff_col]]))
+  print(table(out$res[[ss_col]]))
+  print(table(out$res[[ss_col]], out$res[[diff_col]]))
+  save_stat_table(out$res, paste0("05_da_", level_name, "_",
+                                  ifelse(variable == "Temp_soil_scaled", "soiltemp", "condition"),
+                                  "_ancombc2"))
+  out
+}
 
-META = sample_data(metadata)
-OTU = otu_table(mags_table, taxa_are_rows = TRUE)
-TAX = tax_table(as.matrix(mags_tax_mat))
-physeq = phyloseq(OTU, TAX)
-physeq = merge_phyloseq(physeq, META)
+# (a) soil temperature
+out_mags_temp    <- run_ancombc2("Temp_soil_scaled", "mags")
+out_class_temp   <- run_ancombc2("Temp_soil_scaled", "classes", level = "Class")
+out_genera_temp  <- run_ancombc2("Temp_soil_scaled", "genera",  level = "Genus")
 
-out_genera = ancombc2(data = physeq, tax_level = "Genus",
-                     fix_formula = "Temp_soil_scaled", rand_formula = "(1|Replicate) + (1 | Replicate/year_season)",
-                     p_adj_method = 'fdr', struc_zero = FALSE, 
-                     prv_cut = 0, lib_cut = 0, s0_perc = 0.05,
-                     alpha = 0.05, n_cl = 5, verbose = TRUE)
-table(out_genera$res$diff_Temp_soil_scaled)
-table(out_genera$res$passed_ss_Temp_soil_scaled)
-table(out_genera$res$diff_Temp_soil_scaled, out_genera$res$passed_ss_Temp_soil_scaled)
-write.table(out_genera$res, file = 'stats/genera_diff_abundance_bysoiltemp_fdr.csv', 
-            quote = F, row.names = T, sep = ',')
-
-
-# DA MAGs - Condition
-min_val = min(loaded_mags$raw_table[loaded_mags$raw_table > 0])
-mags_table = as.data.frame(lapply(loaded_mags$raw_table , function(x) round(x / min_val)))
-mags_table[is.na(mags_table)] = 0
-mags_table = mags_table[,colnames(mags_table) %in% metadata$Sample]
-mags_table <- mags_table[, match(metadata$Sample, colnames(mags_table))]
-rownames(mags_table) = loaded_mags$mag_info$MAG
-all(metadata$Sample == colnames(mags_table))
-
-out_mags = ancombc2(data = mags_table, 
-                    meta_data = metadata,
-                    fix_formula = "Condition", rand_formula = "(1|Replicate) + (1 | Replicate/year_season)",
-                    p_adj_method = 'fdr', struc_zero = FALSE, 
-                    prv_cut = 0, lib_cut = 0, s0_perc = 0.05,
-                    alpha = 0.05, n_cl = 5,iter_control = list(
-                      tol = 1e-5,
-                      max_iter = 50,
-                      verbose = TRUE
-                    ))
-table(out_mags$res$diff_Condition)
-table(out_mags$res$passed_ss_Condition)
-table(out_mags$res$passed_ss_Condition, out_mags$res$diff_Condition)
-write.table(out_mags$res, file = 'stats/mag_diff_abundance_bycondition_fdr.csv', 
-            quote = F, row.names = T, sep = ',')
-
-# DA Classes - Condition
-mags_tax_mat = loaded_mags$mag_info[,c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species")]
-rownames(mags_tax_mat) = loaded_mags$mag_info$MAG
-
-META = sample_data(metadata)
-OTU = otu_table(mags_table, taxa_are_rows = TRUE)
-TAX = tax_table(as.matrix(mags_tax_mat))
-physeq = phyloseq(OTU, TAX)
-physeq = merge_phyloseq(physeq, META)
-
-out_class = ancombc2(data = physeq, tax_level = "Class",
-                     fix_formula = "Condition", rand_formula = "(1|Replicate) + (1 | Replicate/year_season)",
-                     p_adj_method = 'fdr', struc_zero = FALSE, 
-                     prv_cut = 0, lib_cut = 0, s0_perc = 0.05,
-                     alpha = 0.05, n_cl = 5, iter_control = list(
-                       tol = 0.005,
-                       max_iter = 50,
-                       verbose = TRUE
-                     ))
-table(out_class$res$diff_Condition)
-table(out_class$res$passed_ss_Condition)
-table(out_class$res$diff_Condition, out_class$res$passed_ss_Condition)
-write.table(out_class$res, file = 'stats/classes_diff_abundance_bycondition_fdr.csv', 
-            quote = F, row.names = T, sep = ',')
-
-# DA Genera - Condition
-mags_tax_mat = loaded_mags$mag_info[,c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species")]
-rownames(mags_tax_mat) = loaded_mags$mag_info$MAG
-
-META = sample_data(metadata)
-OTU = otu_table(mags_table, taxa_are_rows = TRUE)
-TAX = tax_table(as.matrix(mags_tax_mat))
-physeq = phyloseq(OTU, TAX)
-physeq = merge_phyloseq(physeq, META)
-
-out_genera = ancombc2(data = physeq, tax_level = "Genus",
-                      fix_formula = "Condition", rand_formula = "(1|Replicate) + (1 | Replicate/year_season)",
-                      p_adj_method = 'fdr', struc_zero = FALSE, 
-                      prv_cut = 0, lib_cut = 0, s0_perc = 0.05,
-                      alpha = 0.05, n_cl = 5, iter_control = list(
-                        tol = 0.005,
-                        max_iter = 50,
-                        verbose = TRUE
-                      ))
-table(out_genera$res$diff_Condition)
-table(out_genera$res$passed_ss_Condition)
-table(out_genera$res$diff_Condition, out_genera$res$passed_ss_Condition)
-write.table(out_genera$res, file = 'stats/genera_diff_abundance_bycondition_fdr.csv', 
-            quote = F, row.names = T, sep = ',')
+# (b) Condition (warming vs control); looser convergence tolerance for the class /
+#     genus models, as in the original analysis
+out_mags_cond    <- run_ancombc2("Condition", "mags",
+                                 iter_control = list(tol = 1e-5, max_iter = 50, verbose = TRUE))
+out_class_cond   <- run_ancombc2("Condition", "classes", level = "Class",
+                                 iter_control = list(tol = 0.005, max_iter = 50, verbose = TRUE))
+out_genera_cond  <- run_ancombc2("Condition", "genera",  level = "Genus",
+                                 iter_control = list(tol = 0.005, max_iter = 50, verbose = TRUE))
 
 
-
-###### Edu's part
-# Differential abundance
-diff_ab_MAG_FDR_temp = read.csv("stats/mag_diff_abundance_bysoiltemp_fdr.csv", header = TRUE)
-diff_ab_CLASS_FDR_temp = read.csv("stats/classes_diff_abundance_bysoiltemp_fdr.csv", header = TRUE)
+################################################################################
+# Plots
+################################################################################
+# ANCOM-BC2 results for soil temperature (re-read from stats/ so this part can
+# be run without repeating the models above)
+diff_ab_MAG_FDR_temp = read.csv("stats/05_da_mags_soiltemp_ancombc2.csv", header = TRUE)
+diff_ab_CLASS_FDR_temp = read.csv("stats/05_da_classes_soiltemp_ancombc2.csv", header = TRUE)
 
 diff_ab_CLASS_FDR_temp_named <- diff_ab_CLASS_FDR_temp
 diff_ab_CLASS_FDR_temp_named$taxon <- gsub("c__", "", diff_ab_CLASS_FDR_temp$taxon)
 
 # Taxonomic information
-mag_taxonomy = read_tsv("data/mags/gtdbtk.bac120.summary_MAG_ID.tsv")
+mag_taxonomy = read_tsv("data/mags/gtdbtk.bac120.summary.tsv")
 
 # Class abundances from MAG data
 class_ab = read.csv("data/mags/mags_class.csv", row.names=1, header=TRUE)
 
 
-# Custom colours
+# Custom colours (one per top class + "Others")
 custom_palette <- c("#0072B2", "#E69F00", "#009E73", "#CC3333", "#4EAEE8",
                     "#9A7DCC", "#D55E00", "#009CAD", "#FF7F6E", "#7E9A3C", "#999999")
 
@@ -230,7 +150,7 @@ colour_mapping <- setNames(custom_palette[1:length(taxa_order)], taxa_order)
 ########################################################################
 add_clean_taxonomy <- function(diff_ab_data, taxonomy_data) {
   taxonomy_info <- taxonomy_data %>%
-    select(user_genome, MAG_ID, classification) %>%
+    select(user_genome, classification) %>%
     mutate(
       # Extract and format each taxonomic level
       domain = str_extract(classification, "d__[^;]+") %>% str_replace("d__", "d ") %>% str_replace_na("d unknown"),
@@ -242,12 +162,12 @@ add_clean_taxonomy <- function(diff_ab_data, taxonomy_data) {
       
       # Build the taxonomy string based on the last known taxonomic level
       MAG_ID_taxonomy = case_when(
-        genus != "g unknown" ~ str_c(class, "; ", order, "; ", family, "; ", genus, "; ", MAG_ID),
-        family != "f unknown" ~ str_c(class, "; ", order, "; ", family, "; g unknown; ", MAG_ID),
-        order != "o unknown" ~ str_c(class, "; ",  order,  "; f unknown; g unknown; ", MAG_ID),
-        class != "c unknown" ~ str_c(class, "; o unknown; f unknown; g unknown; ", MAG_ID),
-        phylum != "p unknown" ~ str_c(phylum, "; c unknown; o unknown; f unknown; g unknown; ", MAG_ID),
-        domain != "d unknown" ~ str_c(domain, "; p unknown; c unknown; o unknown; f unknown; g unknown; ", MAG_ID)
+        genus != "g unknown" ~ str_c(class, "; ", order, "; ", family, "; ", genus, "; ", user_genome),
+        family != "f unknown" ~ str_c(class, "; ", order, "; ", family, "; g unknown; ", user_genome),
+        order != "o unknown" ~ str_c(class, "; ",  order,  "; f unknown; g unknown; ", user_genome),
+        class != "c unknown" ~ str_c(class, "; o unknown; f unknown; g unknown; ", user_genome),
+        phylum != "p unknown" ~ str_c(phylum, "; c unknown; o unknown; f unknown; g unknown; ", user_genome),
+        domain != "d unknown" ~ str_c(domain, "; p unknown; c unknown; o unknown; f unknown; g unknown; ", user_genome)
       )
     ) %>%
     select(user_genome, MAG_ID_taxonomy)
@@ -302,7 +222,8 @@ plot_ridgeline_abundance <- function(diff_ab_data, taxonomy_data, class_ab, n_cu
   
   # Display and create summary statistics
   print(stats_summary)
-  write_csv(stats_summary, paste0("ridgeline_", lfc_col, "_statistics_EVO.csv"))
+  # per class: median / mean / sd of the MAG-level LFCs and a Wilcoxon test against 0
+  save_stat_table(stats_summary, paste0("05_ridgeline_", lfc_col, "_statistics"))
   
   # Asterisk positioning
   x_range <- range(diff_ab_data[[lfc_col]], na.rm = TRUE)
@@ -336,15 +257,16 @@ plot_ridgeline_abundance <- function(diff_ab_data, taxonomy_data, class_ab, n_cu
   p
 }
 
-# Generate the ridgeline plot
+# Generate the ridgeline plot (panel B of Figure 4)
 ridgeline_class_FDR_temp <- plot_ridgeline_abundance(diff_ab_MAG_FDR_temp_named, mag_taxonomy, class_ab, n_cutoff = 10)
 print(ridgeline_class_FDR_temp)
-ggsave(ridgeline_class_FDR_temp, filename = "ridgeline_class_FDR_soiltemp_EVO.png", width = 6, height = 8, dpi = 300)
 
 ##############################################
 ### MAG Differential Abundance Forest Plot ###
 ##############################################
-plot_lfc_forest <- function(diff_ab_data, colour_mapping, n_cutoff = 10) {
+# n_cutoff highest and n_cutoff lowest LFCs; `label` ('mags' / 'classes') names the
+# saved table (the original script overwrote one file for both levels)
+plot_lfc_forest <- function(diff_ab_data, colour_mapping, n_cutoff = 10, label = "mags") {
     # Determine column names for log fold change and q-value
     if ("lfc_Conditionwarming" %in% names(diff_ab_data)) {
       lfc_col <- "lfc_Conditionwarming"
@@ -398,9 +320,9 @@ plot_lfc_forest <- function(diff_ab_data, colour_mapping, n_cutoff = 10) {
   # Display important lfc statistics for top/bottom 10 taxa
   print(plot_data %>%
           select(new_ID, !!sym(lfc_col), !!sym(se_col), !!sym(q_col), significant) )
-  write_csv(plot_data %>%
-              select(new_ID, !!sym(lfc_col), !!sym(se_col), !!sym(q_col), significant),
-            paste0("forest_plot_", lfc_col, "_values_EVO.csv"))
+  save_stat_table(plot_data %>%
+                    select(new_ID, !!sym(lfc_col), !!sym(se_col), !!sym(q_col), significant),
+                  paste0("05_forest_", label, "_", lfc_col, "_values"))
   
   # Create the plot
   lfc <- ggplot(plot_data, aes(x = !!sym(lfc_col), y = new_ID, fill = display_taxon)) +
@@ -419,13 +341,13 @@ plot_lfc_forest <- function(diff_ab_data, colour_mapping, n_cutoff = 10) {
 #############################
 ### Generate Forest Plots ###
 #############################
-forest_plot_MAG_FDR_temp <- plot_lfc_forest(diff_ab_MAG_FDR_temp_named, colour_mapping, n_cutoff = 10)
+forest_plot_MAG_FDR_temp <- plot_lfc_forest(diff_ab_MAG_FDR_temp_named, colour_mapping, n_cutoff = 10, label = "mags")
 print(forest_plot_MAG_FDR_temp)
-ggsave(forest_plot_MAG_FDR_temp, filename = "forest_plot_MAG_FDR_soiltemp_EVO.png", width = 8, height = 10, dpi = 300)
+save_fig(forest_plot_MAG_FDR_temp, 'sfig_da_forest_mags_top', width = 8, height = 10)
 
-forest_plot_CLASS_FDR_temp <- plot_lfc_forest(diff_ab_CLASS_FDR_temp_named, colour_mapping, n_cutoff = 10)
+forest_plot_CLASS_FDR_temp <- plot_lfc_forest(diff_ab_CLASS_FDR_temp_named, colour_mapping, n_cutoff = 10, label = "classes")
 print(forest_plot_CLASS_FDR_temp)
-ggsave(forest_plot_CLASS_FDR_temp, filename = "forest_plot_CLASS_FDR_soiltemp_EVO.png", width = 8, height = 10, dpi = 300)
+save_fig(forest_plot_CLASS_FDR_temp, 'sfig_da_forest_class_top', width = 8, height = 10)
 
 ############################################
 ### Forest plot of only significant MAGs ###
@@ -439,6 +361,7 @@ diff_ab_MAG_FDR_temp_named_sig <- diff_ab_MAG_FDR_temp_named_sig %>%
   mutate(display_taxon = if_else(class %in% top_taxa, class, "Others"),
     display_taxon = factor(display_taxon, levels = c(top_taxa, "Others")))
 
+# (panel A of Figure 4)
 forest_plot_MAG_temp_significant <- ggplot(diff_ab_MAG_FDR_temp_named_sig,
                                            aes(x = lfc_Temp_soil_scaled,
                                                y = MAG_ID_taxonomy, 
@@ -452,19 +375,17 @@ forest_plot_MAG_temp_significant <- ggplot(diff_ab_MAG_FDR_temp_named_sig,
   scale_fill_manual(values = colour_mapping) +
   labs(x = "Log Fold Change - Soil Temperature", y = "MAG Taxa", fill = "Class") +
   theme_minimal() +
-  theme(legend.position = c(0.85,
-                            #0.745,
-    0.142), axis.text.y = element_text(size = 8))
+  theme(legend.position = "inside", legend.position.inside = c(0.85, 0.142),
+        axis.text.y = element_text(size = 8))
 forest_plot_MAG_temp_significant
-ggsave(forest_plot_MAG_temp_significant, 
-       filename = "forest_plot_MAG_FDR_soiltemp_significant_EVO.png", 
-       width = 8, height = 6, dpi = 300)
 
 ######################################
 ### Combine plots for final figure ###
 ######################################
 
-Figure3_diff_ab_CLASS_MAGs_EVO <- ggarrange(ridgeline_class_FDR_temp, forest_plot_MAG_temp_significant, 
-                                            labels = c("A", "B"), font.label = "bold",
-                                            nrow = 2, widths = c(1, 1))
-ggsave("Figure4.pdf", plot = Figure3_diff_ab_CLASS_MAGs_EVO, width = 10, height = 12)
+Figure4_diff_ab_CLASS_MAGs <- ggarrange(forest_plot_MAG_temp_significant, ridgeline_class_FDR_temp,
+                                        labels = c("A", "B"), font.label = "bold",
+                                        nrow = 2, widths = c(1, 1))
+save_fig(Figure4_diff_ab_CLASS_MAGs, 'fig_diff_abundance_mags', width = 10, height = 12)
+
+save_session_info("05")

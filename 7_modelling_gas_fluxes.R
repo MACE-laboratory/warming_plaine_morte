@@ -1,4 +1,4 @@
-setwd('~/Documents/MACE/EVO_study/warming_plaine_morte')
+setwd('~/Documents/MACE/warming_plaine_morte')
 
 source('0_functions_and_packages.R')
 library(performance)
@@ -131,7 +131,7 @@ run_gam_forward_selection <- function(metadata,
                                       response_variable,
                                       base_vars,
                                       try_effects,
-                                      bf_threshold = 3) {
+                                      bf_threshold = 10) {
   
   vars_used <- unique(c(response_variable, try_effects, base_vars))
   dat <- metadata[, vars_used, drop = FALSE]
@@ -139,7 +139,7 @@ run_gam_forward_selection <- function(metadata,
   
   # --- BASELINE MODEL (your new null) ---
   rhs_base <- c(
-    paste0("s(", base_vars, ", bs='ts', k=5)")
+    paste0("s(", base_vars, ", bs='tp', k=3)")
   )
   
   base_formula_str <- paste(response_variable, "~", paste(rhs_base, collapse = " + "))
@@ -168,9 +168,9 @@ run_gam_forward_selection <- function(metadata,
       if (length(unique(feature_values[!is.na(feature_values)])) <= 1) next
       
       rhs_try <- c(
-        paste0("s(", base_vars, ", bs='ts', k=5)"),
-        if (length(selected_vars) > 0) paste0("s(", selected_vars, ", bs='ts', k=5)"),
-        paste0("s(", var, ", bs='ts', k=5)")
+        paste0("s(", base_vars, ", bs='tp', k=3)"),
+        if (length(selected_vars) > 0) paste0("s(", selected_vars, ", bs='tp', k=3)"),
+        paste0("s(", var, ", bs='tp', k=3)")
       )
       
       formula_str <- paste(response_variable, "~", paste(rhs_try, collapse = " + "))
@@ -178,13 +178,28 @@ run_gam_forward_selection <- function(metadata,
       
       m_try <- mgcv::gam(f_try, data = dat, method = "REML")
       
+      # Extract p-value of the newly added smooth term
+      p_val <- tryCatch({
+        s_table <- summary(m_try)$s.table
+        row_idx <- grep(paste0("^s\\(", var, "\\)"), rownames(s_table))
+        if (length(row_idx) == 1) {
+          s_table[row_idx, "p-value"]
+        } else {
+          NA
+        }
+      }, error = function(e) NA)
+      
+      print(p_val)
+      
       bf <- tryCatch({
         performance::test_bf(m_try, current_model)$BF[2]
       }, error = function(e) NA)
       
       print(bf)
       
-      if (!is.na(bf) && bf > best_bf) {
+      # Only consider variables with p < 0.1 and BF improvement
+      if (!is.na(p_val) && p_val < 0.1 &&
+          !is.na(bf) && bf > best_bf) {
         best_bf <- bf
         best_var <- var
         best_model <- m_try
@@ -216,7 +231,7 @@ run_gam_forward_selection <- function(metadata,
   results_df <- data.frame(
     model = "final_model",
     formula = paste(deparse(formula(final_model)), collapse = ""),
-    deviance_explained = summary(final_model)$dev.expl,
+    deviance_explained = summary(final_model)$dev.expl, # TO REPLAVE WITH R2
     BF_vs_null = bf_final,
     selected_vars = paste(selected_vars, collapse = ", "),
     stringsAsFactors = FALSE
@@ -237,28 +252,100 @@ run_gam_forward_selection <- function(metadata,
 }
 
 abiotic_ch4_soilt = run_gam_forward_selection(metadata, response_variable = 'CH4_Flux',
-                                        base_vars = c("Temp_soil_scaled", "Water_Content_Lab_scaled"),
-                                        try_effects = c("TC_scaled","TOC_scaled","TIN_scaled",
-                                                      "pH_scaled","NH4._scaled"))
+                                        base_vars = c("Temp_soil", "Water_Content_Lab"),
+                                        try_effects = c("TC","TOC","TIN",
+                                                      "pH","NH4."))
 
 abiotic_ch4_airt = run_gam_forward_selection(metadata, response_variable = 'CH4_Flux',
-                                        base_vars = c("Temp_air_scaled", "Water_Content_Lab_scaled"),
-                                        try_effects = c("TC_scaled","TOC_scaled","TIN_scaled",
-                                                        "pH_scaled","NH4._scaled"))
+                                             base_vars = c("Temp_air", "Water_Content_Lab"),
+                                             try_effects = c("TC","TOC","TIN",
+                                                             "pH","NH4."))
 
 abiotic_co2_soilt = run_gam_forward_selection(metadata, response_variable = 'CO2_Flux',
-                                        base_vars = c("Temp_soil_scaled", "Water_Content_Lab_scaled"),
-                                        try_effects = c("TC_scaled","TOC_scaled","TIN_scaled",
-                                                        "pH_scaled","NH4._scaled"))
+                                              base_vars = c("Temp_soil", "Water_Content_Lab"),
+                                              try_effects = c("TC","TOC","TIN",
+                                                              "pH","NH4."))
 
 abiotic_co2_airt = run_gam_forward_selection(metadata, response_variable = 'CO2_Flux',
-                                        base_vars = c("Temp_air_scaled", "Water_Content_Lab_scaled"),
-                                        try_effects = c("TC_scaled","TOC_scaled","TIN_scaled",
-                                                        "pH_scaled","NH4._scaled"))
+                                             base_vars = c("Temp_air", "Water_Content_Lab"),
+                                             try_effects = c("TC","TOC","TIN",
+                                                             "pH","NH4."))
 
+library(broom)
+library(ggplot2)
+library(dplyr)
+library(ggeffects)
+
+sink('stats/gams_abiotic_fluxes.txt')
 summary(abiotic_ch4_airt$final_model)
 summary(abiotic_co2_soilt$final_model)
+sink()
 
+pred_temp <- as.data.frame(ggpredict(abiotic_co2_soilt$final_model, terms = "Temp_soil [all]"))
+p1 = ggplot(pred_temp, aes(x = x, y = predicted)) +
+  geom_point(data = metadata, aes(x = Temp_soil, y = CO2_Flux),
+             inherit.aes = FALSE, alpha = 0.5, colour='#FF7F24', alpha=0.7) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15) +
+  geom_line(color = "#8B4513", linewidth = 1) +
+  labs(x = "Soil temperature (°C)", y = expression("Partial effect on CO"[2]~" Flux")) +
+  theme_minimal()
+
+pred_temp <- as.data.frame(ggpredict(abiotic_co2_soilt$final_model, terms = "Water_Content_Lab [all]"))
+p2 = ggplot(pred_temp, aes(x = x, y = predicted)) +
+  geom_point(data = metadata, aes(x = Water_Content_Lab, y = CO2_Flux),
+             inherit.aes = FALSE, alpha = 0.5, colour='#FF7F24', alpha=0.7) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15) +
+  geom_line(color = "#8B4513", linewidth = 1) +
+  labs(x = "Soil water content (%)", y = expression("Partial effect on CO"[2]~" Flux")) +
+  theme_minimal()
+
+sp2 = ggarrange(p1,p2,nrow = 1, labels = c('B', ''))
+
+
+
+summary(abiotic_ch4_airt$final_model)
+# Family: gaussian 
+# Link function: identity 
+# 
+# Formula:
+# CH4_Flux ~ s(Temp_air_scaled, bs = "tp", k = 3) + s(Water_Content_Lab_scaled, 
+#                                                       bs = "tp", k = 3)
+# 
+# Parametric coefficients:
+# Estimate Std. Error t value Pr(>|t|)    
+# (Intercept) -0.26520    0.03611  -7.345 3.58e-09 ***
+
+# Approximate significance of smooth terms:
+# edf Ref.df     F p-value  
+# s(Temp_air_scaled)            1      1 6.754  0.0127 *
+# s(Water_Content_Lab_scaled)   1      1 5.618  0.0222 *
+
+# R-sq.(adj) =  0.124   Deviance explained = 16.2%
+# -REML = 6.6573  Scale est. = 0.061275  n = 47
+
+summary(abiotic_co2_soilt$final_model)
+# Family: gaussian 
+# Link function: identity 
+# 
+# Formula:
+# CO2_Flux ~ s(Temp_soil_scaled, bs = "tp", k = 3) + s(Water_Content_Lab_scaled, 
+#                                                        bs = "tp", k = 3)
+# 
+# Parametric coefficients:
+# Estimate Std. Error t value Pr(>|t|)  
+# (Intercept)  0.05873    0.02762   2.127   0.0393 *
+
+# Approximate significance of smooth terms:
+# edf Ref.df     F p-value   
+# s(Temp_soil_scaled)         1.890  1.986 7.572 0.00237 **
+# s(Water_Content_Lab_scaled) 1.751  1.937 3.859 0.01907 * 
+
+# R-sq.(adj) =  0.382   Deviance explained = 43.1%
+# -REML = -3.2763  Scale est. = 0.035846  n = 47
+
+
+
+# biotic models
 mags_table = as.data.frame(loaded_mags$clr_table)
 meta_table = as.data.frame(loaded_meta$ko_clr_table)
 prot_table = read.table('data/proteomics/metaP_norm_imp.tsv', header = T)
@@ -302,7 +389,7 @@ correlate_features_with_gam <- function(feature_table,
     
     new_formula <- update(
       base_formula,
-      paste0(". ~ . + s(", feature_name, ", bs='ts', k=5)")
+      paste0(". ~ . + s(", feature_name, ", bs='tp', k=3)")
     )
     
     new_model <- mgcv::gam(new_formula, data = meta_tmp, method = "REML")
@@ -349,6 +436,9 @@ correlate_features_with_gam <- function(feature_table,
   return(output_df)
 }
 
+summary(abiotic_ch4_airt$final_model)
+summary(abiotic_co2_soilt$final_model)
+
 ############################################
 # CH4
 # For MAGs table
@@ -359,26 +449,49 @@ mags_stats_ch4 <- correlate_features_with_gam(
   best_model_result = abiotic_ch4_airt
 )
 
-# For Metagenome table
-meta_stats_ch4 <- correlate_features_with_gam(
-  feature_table = meta_table,
-  metadata = metadata,
-  sample_col = "Sample",
-  best_model_result = abiotic_ch4_airt
-)
-
-# For Proteins table
-prot_stats_ch4 <- correlate_features_with_gam(
-  feature_table = prot_table,
-  metadata = metadata,
-  sample_col = "Sample",
-  best_model_result = abiotic_ch4_airt
-)
-
 mags_stats_ch4 %>% filter(BF_vs_base > 3, padj_feature < 0.05)
-meta_stats_ch4 %>% filter(BF_vs_base > 3, padj_feature < 0.05)
-prot_stats_ch4 %>% filter(BF_vs_base > 3, padj_feature < 0.05)
 
+
+metadata$sub_assembly_1_bin_11719 = map_dbl(metadata$Sample, function(x) mags_table['sub_assembly_1_bin_11719',x])
+add_mod = gam(CH4_Flux ~ s(Temp_air, bs = "tp", k = 3) + s(Water_Content_Lab, bs = "tp", k = 3) + s(sub_assembly_1_bin_11719, bs = "tp", k = 3), data=metadata)
+summary(add_mod)
+pred_temp <- as.data.frame(ggpredict(add_mod, terms = "Temp_soil_scaled [all]"))
+
+
+pred_temp <- as.data.frame(ggpredict(add_mod, terms = "Temp_air [all]"))
+p1 = ggplot(pred_temp, aes(x = x, y = predicted)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15) +
+  geom_line(color = "#2E8B57", linewidth = 1) +
+  geom_point(data = metadata, aes(x = Temp_air, y = CH4_Flux),
+             inherit.aes = FALSE, alpha = 0.5, colour='#43CD80') +
+  labs(x = "Air temperature (°C)", y = expression("Partial effect on CH"[4]~" Flux")) +
+  theme_minimal()
+
+pred_temp <- as.data.frame(ggpredict(add_mod, terms = "Water_Content_Lab [all]"))
+p2 = ggplot(pred_temp, aes(x = x, y = predicted)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15) +
+  geom_line(color = "#2E8B57", linewidth = 1) +
+  geom_point(data = metadata, aes(x = Water_Content_Lab, y = CH4_Flux),
+             inherit.aes = FALSE, alpha = 0.5, colour='#43CD80') +
+  labs(x = "Soil water content (%)", y = expression("Partial effect on CH"[4]~" Flux")) +
+  theme_minimal()
+sp1 = ggarrange(p1,p2,nrow = 1, labels = c('A', ''))
+
+pred_temp <- as.data.frame(ggpredict(add_mod, terms = "sub_assembly_1_bin_11719 [all]"))
+p3 = ggplot(pred_temp, aes(x = x, y = predicted)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15) +
+  geom_line(color = "#2E8B7D", linewidth = 1) +
+  geom_point(data = metadata, aes(x = sub_assembly_1_bin_11719, y = CH4_Flux),
+             inherit.aes = FALSE, alpha = 0.5, colour='#43CDB1') +
+  labs(x = "MAG abundance (CLR)", y = expression("Partial effect on CH"[4]~" Flux")) +
+  theme_minimal()
+sp1 = ggarrange(p1,p2,p3,nrow = 1, labels = c('A', ''))
+
+ggarrange(sp1, sp2, nrow = 2)
+ggsave('figures/Figure7.pdf', width = 8, height = 6)
+
+
+loaded_mags$mag_info[loaded_mags$mag_info$MAG == 'sub_assembly_1_bin_11719',]
 ############################################
 # C02
 
@@ -390,25 +503,33 @@ mags_stats_co2 <- correlate_features_with_gam(
   best_model_result = abiotic_co2_soilt
 )
 
-# For Metagenome table
-meta_stats_co2 <- correlate_features_with_gam(
-  feature_table = meta_table,
-  metadata = metadata,
-  sample_col = "Sample",
-  best_model_result = abiotic_co2_soilt
-)
-
-# For Proteins table
-prot_stats_co2 <- correlate_features_with_gam(
-  feature_table = prot_table,
-  metadata = metadata,
-  sample_col = "Sample",
-  best_model_result = abiotic_co2_soilt
-)
-
 mags_stats_co2 %>% filter(BF_vs_base > 3, padj_feature < 0.05)
-meta_stats_co2 %>% filter(BF_vs_base > 3, padj_feature < 0.05)
-prot_stats_co2 %>% filter(BF_vs_base > 3, padj_feature < 0.05)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 mags_stats_ch4$Dataset = 'MAG'
 meta_stats_ch4$Dataset = 'Meta KO'
@@ -425,8 +546,11 @@ write.table(ch4_res, file = 'stats/modelling_ch4.csv', sep=',', quote = F, row.n
 write.table(co2_res, file = 'stats/modelling_co2.csv', sep=',', quote = F, row.names = F)
 
 
+ch4_res = read.table(file = 'stats/modelling_ch4.csv', sep=',', header = T)
+co2_res = read.table(file = 'stats/modelling_co2.csv', sep=',', header = T)
 
-
+ch4_res %>% filter(BF_vs_base > 3, padj_feature < 0.05)
+co2_res %>% filter(BF_vs_base > 3, padj_feature < 0.05)
 
 plot_gam_partial_effects <- function(gam_model,
                                      metadata,

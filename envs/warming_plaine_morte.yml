@@ -1,68 +1,94 @@
 name: warming_plaine_morte
 
+# MAIN environment: every analysis script EXCEPT the DEP2 proteomics
+# normalisation (6_a2_impute_normalise_proteins.R), which uses its own env:
+#   envs/warming_plaine_morte_dep2.yml
+#
+# Only conda-forge + bioconda are meant to be used. Do NOT add the `r` or
+# `defaults` channels: mixing them with conda-forge breaks R builds. If your conda
+# adds `defaults` from ~/.condarc, run once:  conda config --set channel_priority strict
 channels:
-  - r
-  - bioconda
   - conda-forge
-  - defaults
+  - bioconda
 
 dependencies:
-  - r-base=4.4.3
-  - r-essentials=4.4
+  # ---------------------------------------------------------------- R itself
+  - r-base=4.4
+  - r-recommended            # mgcv, MASS, Matrix, nlme, survival, lattice ...
+  - r-remotes                # used by install_github_packages.R
+  - r-withr
+  - compilers                # needed for the few source (GitHub) installs
+  - make
+  - pkg-config
 
-  # Core tidyverse / analysis
-  - r-tidyverse=2.0.0
-  - r-ggplot2=3.5.2
-  - r-dplyr=1.1.4
-  - r-tidyr=1.3.1
-  - r-readr=2.1.5
-  - r-purrr=1.0.4
-  - r-stringr=1.5.1
-  - r-forcats=1.0.0
+  # ---------------------------------------------------- tidyverse / data wrangling
+  # (versions marked =x.y were already pinned in the previous env files; kept so
+  #  that figures/statistics stay comparable)
+  - r-tidyverse=2.0
+  - r-ggplot2=3.5            # pinned < 4.0: scripts use size=/..eq.label.. idioms
+  - r-dplyr=1.1
+  - r-tidyr=1.3
+  - r-readr=2.1
+  - r-purrr=1.0
+  - r-stringr=1.5
+  - r-tibble
+  - r-reshape2
+  - r-data.table=1.17
+  - r-jsonlite
 
-  # Data & stats
-  - r-data.table=1.17.4
-  - r-matrix=1.7.3
-  - r-lme4=1.1.37
-  - r-glmnet=4.1.10
-  - r-caret=6.0.94
-  - r-survival=3.8.3
-  - r-randomforest=4.7.1.2
-  - r-rpart=4.1.24
+  # ------------------------------------------------------------ plotting
+  - r-ggpubr=0.6
+  - r-ggrepel=0.9
+  - r-ggsignif
+  - r-cowplot=1.1
+  - r-patchwork
+  - r-ggridges
+  - r-ggthemes
+  - r-ggstance
+  - r-ggeffects
+  - r-ggraph
+  - r-igraph
+  - r-ggtext
+  - r-scales
+  - r-paletteer
+  - r-rcolorbrewer
+  - bioconductor-ggtree      # must resolve to 3.x (4.x needs ggplot2 >= 4)
 
-  # Visualization
-  - r-cowplot=1.1.3
-  - r-gridextra=2.3
-  - r-ggpubr=0.6.0
-  - r-ggrepel=0.9.6
+  # ---------------------------------------------- statistics / modelling
+  - r-vegan=2.7
+  - r-performance
+  - r-compositions
+  - r-rstatix
+  - r-coin
+  - r-hmisc
+  - r-broom
+  - r-lme4
+  - r-ape=5.8
+  - r-seqinr
 
-  # Ecology / multivariate
-  - r-vegan=2.7.1
-  - r-phyloseq=1.50.0
-  - r-ape=5.8.1
+  # -------------------------------------------------- Bioconductor 3.20 (R 4.4)
+  - bioconductor-phyloseq
+  - bioconductor-genomeinfodbdata   # not declared as a dependency by GenomeInfoDb on bioconda -> load errors without it
+  - bioconductor-microbiome
+  - bioconductor-keggrest
+  - bioconductor-biostrings
+  - bioconductor-decipher
 
-  # Bioconductor core ecosystem
-  - bioconductor-biobase=2.66.0
-  - bioconductor-biocgenerics=0.52.0
-  - bioconductor-biocparallel=1.40.0
-  - bioconductor-summarizedexperiment=1.36.0
-  - bioconductor-iranges=2.40.0
-  - bioconductor-genomicranges=1.58.0
-  - bioconductor-s4vectors=0.44.0
+  # NOT on conda (or not for every platform, e.g. osx-arm64) -> installed from a
+  # date-pinned CRAN snapshot by envs/install_github_packages.R:
+  #   gratia, khroma, spaa, metacoder, taxonomizr
 
-  # Microbiome / sequencing
-  - bioconductor-microbiome=1.28.0
-  - bioconductor-phyloseq=1.50.0
-  - bioconductor-biostrings=2.74.0
-
-  # HDF5 / data formats
-  - bioconductor-rhdf5=2.50.0
-  - bioconductor-rhdf5lib=1.28.0
-
-  # Utilities
-  - r-rmarkdown=2.29
-  - r-knitr=1.50
-  - r-jsonlite=2.0.0
-  - r-httr=1.4.7
-  - r-devtools=2.4.5
-  - r-testthat=3.2.3
+  # ---- ANCOMBC: dependencies only. The package itself is installed from GitHub
+  # ---- (pinned commit) by envs/install_github_packages.R
+  - r-cvxr=1.0               # ANCOMBC (2025 commits) breaks with CVXR >= 1.8
+  - r-desctools
+  - r-doparallel
+  - r-dorng
+  - r-energy
+  - r-foreach
+  - r-gtools
+  - r-lmertest
+  - r-multcomp
+  - r-nloptr
+  - r-quadprog
+  - r-rdpack

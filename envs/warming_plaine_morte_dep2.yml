@@ -1,16 +1,59 @@
 name: warming_plaine_morte_dep2
+
+# Environment ONLY for 6_a2_impute_normalise_proteins.R (DEP2: filtering, VSN
+# normalisation and KNN imputation of the metaproteomics data).
+# DEP2 and fdrtool are not on conda for every platform: after creating the env run
+#   Rscript envs/install_github_packages.R dep2
 channels:
-  - r
-  - bioconda
   - conda-forge
-  - defaults
+  - bioconda
+
 dependencies:
   - r-base=4.4
-  - r-essentials=4.4
-  - r-ggplot2=4.0.1
-  - r-tidyverse=2.0.0
-  - r-devtools=2.4.6
-  - bioconductor-msnbase=2.32.0
-  - bioconductor-deseq2=4.4.0
-  - bioconductor-tcseq=1.30.0
-  - r-reticulate=1.44.1
+  - r-recommended
+  - r-remotes
+  - r-pak
+  - r-withr
+  - compilers
+  - make
+  - pkg-config
+
+  # scripts' own needs
+  - r-tidyverse=2.0
+  - r-dplyr=1.1
+  - r-seqinr          # only if you also run the gene-extraction step here
+
+  # DEP2 dependencies (DEP2 Imports/Depends)
+  - bioconductor-msnbase
+  - bioconductor-mscoreutils
+  - bioconductor-limma
+  - bioconductor-summarizedexperiment
+  - bioconductor-qfeatures
+  - bioconductor-deseq2
+  - bioconductor-vsn
+  - bioconductor-tcseq
+  - bioconductor-complexheatmap
+  - bioconductor-qvalue
+  - bioconductor-s4vectors
+  - bioconductor-genomeinfodbdata   # not declared as a dependency by GenomeInfoDb on bioconda -> load errors without it
+  - r-imputelcmd
+  - r-missforest
+  - r-lazyeval
+  - r-circlize
+  - r-dt
+  - r-glmnet
+  - r-ggvenndiagram
+  - r-ggrepel
+  - r-rtsne
+  - r-umap
+  - r-abind
+  - r-downloader
+  - r-assertthat
+  - r-r6
+  - r-purrr
+  - r-readr
+  - r-tidyr
+  - r-tibble
+  - r-data.table
+  - r-ggplot2
+  - r-rcolorbrewer

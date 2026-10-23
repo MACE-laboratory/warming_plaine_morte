@@ -5,3 +5,6 @@ stats/
 stats
 figures/
 figures
+.Rproj.user
+.Rhistory
+Rplots.pdf

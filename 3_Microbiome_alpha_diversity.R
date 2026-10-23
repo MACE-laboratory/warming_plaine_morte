@@ -1,29 +1,38 @@
-setwd('~/Documents/MACE/EVO_study/warming_plaine_morte')
-source('0_functions_and_packages.R')
+################################################################################
+# 3_Microbiome_alpha_diversity.R
+#
+# Alpha diversity of the soil microbiome (MAGs and 16S amplicons):
+#   2.1  Taxonomic trees (metacoder heat trees) + MAG quality summary
+#   2.2  Soil-temperature effect on Shannon / observed richness / inverse
+#        Simpson (GAMs)                     -> Figure 2 (MAGs), SFig 6 (16S)
+#   2.3  Specialist vs generalist MAGs (Levins niche width, EcolUtils::spec.gen)
+#   2.4  Rank-abundance curves: warming vs control   -> SFig 4, SFig 8
+#   2.5  Seasonal / yearly variation in the control plots -> SFig 7
+#
+# Inputs : data/mags/*, data/16S/*, data/SiteL23_24_env_variables_final.csv
+# Outputs: figures/Fig_2, SFig_4, SFig_6, SFig_7, SFig_8  (.pdf + .png)
+#          stats/03_*.csv|txt
+#
+# Note: the GAMs here use mgcv's default smoothing-parameter estimation (GCV.Cp),
+# whereas 1_PCA_temperature.R and 7_/6_b_ use REML.
+################################################################################
+source('0_functions_and_packages.R')   # run from the repository root
+library(metacoder)
 
-# loading functions
 loaded_mags = load_mags_data()
 loaded_16s = load_16sr_data()
-metadata = load_metadata()
-metadata = check_normality_change(metadata, c("Temp_soil","Temp_air","Luminosity","CH4_Flux","CO2_Flux","Water_Content_Field",
-                                              "TC","TOC","pH","Water_Content_Lab","F.","NO3.","Cl.",              
-                                              "NO2.","PO4.","SO4.","Br.","Li.","NH4.","Ca2.",          
-                                              "Sr2.","Na.","Mg2.","K.","Formate","Malate","Propionate",
-                                              "Citrate","Lactate","Butyrate","Oxalate","Acetate","TIN","Other_Anions",
-                                              "Other_Cations","Grouped_OC"))
 
-metadata$Aspect = 'North'
-metadata$Aspect[metadata$Replicate %in% c('C','D','E')] = 'South'
-metadata$OTC = 'No'
-metadata$OTC[metadata$Replicate %in% c('A','B','C')] = 'Yes'
+# metadata with scaled variables, Aspect, OTC; `metadata_timeseries` = control plots
+# only (this object used to be defined only in script 1, which broke running
+# this script on its own)
+metadata = prepare_metadata()
+metadata_timeseries = subset_metadata(metadata)$timeseries
 
 ################################################################################
 # Part 2. Microbiome - alpha diversity
 ################################################################################
 # 2.1 Taxonomic diversity
-library(metacoder)
-library(dplyr)
-
+# Mean relative abundance + taxonomy string (cut at family level) per MAG / OTU
 mag_data = loaded_mags$relab_table
 mag_data$mag_id = rownames(mag_data)
 mag_data$Taxonomy = map_chr(mag_data$mag_id, function(x) loaded_mags$mag_info$Taxonomy[loaded_mags$mag_info$MAG == x])
@@ -36,8 +45,8 @@ a16s_data$Taxonomy = map_chr(a16s_data$otu_id, function(x) loaded_16s$tax_table$
 a16s_data$Taxonomy = map_chr(a16s_data$Taxonomy, function(x) strsplit(x, split = ';f__')[[1]][1])
 a16s_data$mean_rel_ab = rowMeans(loaded_16s$relab_table)
 
-# MAGs stats section
-write.table(loaded_mags$mag_info, file = 'stats/mags_checkm2_gtdb.csv', quote = F, row.names = F)
+# MAGs stats section: per-MAG quality (CheckM2) + taxonomy (GTDB-Tk) and summary
+save_stat_table(loaded_mags$mag_info, '03_mags_checkm2_gtdb')
 
 median_length = median(loaded_mags$mag_info$Length)
 iqr_length = quantile(loaded_mags$mag_info$Length, probs = 0.75) - quantile(loaded_mags$mag_info$Length, probs = 0.25)
@@ -52,17 +61,15 @@ nhq = sum((loaded_mags$mag_info$Completeness > 90) & (loaded_mags$mag_info$Conta
 nmq = sum((loaded_mags$mag_info$Completeness > 50) & (loaded_mags$mag_info$Contamination < 10)) - nhq
 nlq = nrow(loaded_mags$mag_info) - nhq - nmq
   
-sink('stats/mags_checkm2_summary.txt')
-print(paste0('Median (IQR) MAG length: ', median_length, 'bp (', iqr_length, 'bp)'))
-print(paste0('Median (IQR) MAG completeness: ', median_comp, '% (', iqr_comp, '%)'))
-print(paste0('Median (IQR) MAG contamination: ', median_cont, '% (', iqr_cont, '%)'))
+save_stat_lines('03_mags_checkm2_summary', c(
+  paste0('Median (IQR) MAG length: ', median_length, 'bp (', iqr_length, 'bp)'),
+  paste0('Median (IQR) MAG completeness: ', median_comp, '% (', iqr_comp, '%)'),
+  paste0('Median (IQR) MAG contamination: ', median_cont, '% (', iqr_cont, '%)'),
+  paste0('Number of high quality MAGs (>90% completeness, <5% contamination): ', nhq),
+  paste0('Number of medium quality MAGs (>50% completeness, <10% contamination): ', nmq),
+  paste0('Number of low quality MAGs (>40% completeness): ', nlq)))
 
-print(paste0('Number of high quality MAGs (>90% completeness, <5% contamination): ', nhq))
-print(paste0('Number of medium quality MAGs (>50% completeness, <10% contamination): ', nmq))
-print(paste0('Number of low quality MAGs (>40% completeness): ', nlq))
-sink()
-
-# Taxonomic trees
+# Taxonomic heat trees (panel A of Figure 2 for MAGs, of SFig 6 for 16S)
 taxmap_obj_mags <- parse_tax_data(
   mag_data,
   class_cols = "Taxonomy", # the column that contains taxonomic information
@@ -105,11 +112,13 @@ panel_left_16s = taxmap_obj_amplicon %>%
 
 
 # 2.2 Temperature effect on alpha-diversity (MAGs)
+# CoverM trimmed-mean abundances are converted to pseudo-counts (divided by the
+# smallest non-zero value, truncated to integers) so that count-based indices apply.
 min_non_zero = min(loaded_mags$raw_table[loaded_mags$raw_table > 0])
 norm_table_cond = as.data.frame(lapply(loaded_mags$raw_table , function(x) as.integer(x / min_non_zero)))
 norm_table_cond = norm_table_cond[,colnames(norm_table_cond) %in% metadata$Sample]
 norm_table_cond <- norm_table_cond[, match(metadata$Sample, colnames(norm_table_cond))]
-all(metadata$Sample == colnames(norm_table_cond))
+stopifnot(all(metadata$Sample == colnames(norm_table_cond)))
 
 shannon = vegan::diversity(t(norm_table_cond))
 invsimp = vegan::diversity(t(norm_table_cond), index = 'invsimpson')
@@ -120,25 +129,20 @@ metadata$Observed_MAGs = obs
 metadata$InvSimp_MAGs = invsimp
 
 metadata$Replicate = as.factor(metadata$Replicate)
-mod_shannon = gam(formula = Shannon_MAGs ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5) + Aspect, 
+mod_shannon = gam(formula = Shannon_MAGs ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5), 
                   data=metadata)
-sink('stats/figure2_gams_shannon_soiltemp.txt')
-summary(mod_shannon)
-sink()
+save_stat_text('03_alpha_mags_gam_shannon_soiltemp', summary(mod_shannon))
 
-mod_observed = gam(formula = Observed_MAGs ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5) + Aspect, 
+mod_observed = gam(formula = Observed_MAGs ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5), 
                    data=metadata)
-sink('stats/figure2_gams_obs_rich_soiltemp.txt')
-summary(mod_observed)
-sink()
+save_stat_text('03_alpha_mags_gam_observed_soiltemp', summary(mod_observed))
 
-mod_invsimp = gam(formula = InvSimp_MAGs ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5) + Aspect, 
+mod_invsimp = gam(formula = InvSimp_MAGs ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5), 
                    data=metadata)
-sink('stats/figure2_gams_inv_simp_soiltemp.txt')
-summary(mod_invsimp)
-sink()
+save_stat_text('03_alpha_mags_gam_invsimpson_soiltemp', summary(mod_invsimp))
 
-# Plotting
+# Plotting: predictions over a soil-temperature grid for every day / replicate /
+# aspect combination, averaged over those combinations (the 'fit' line).
 pred_grid <- expand.grid(
   Days_Since_Start = unique(metadata$Days_Since_Start),
   Replicate = unique(metadata$Replicate), 
@@ -204,7 +208,7 @@ a = ggplot() +
               alpha = 0.2, fill = 'dimgrey') +
   # median predicted line
   geom_line(data = pred_median, 
-            aes(x = Temp_soil, y = fit_shannon), colour='black', size = 1) +
+            aes(x = Temp_soil, y = fit_shannon), colour='black', linewidth = 1) +
   labs(x = "Soil temperature [°C]", y = "Shannon Index") +
   theme_minimal()
 
@@ -220,7 +224,7 @@ b = ggplot() +
               alpha = 0.2, fill = 'dimgrey') +
   # median predicted line
   geom_line(data = pred_median, 
-            aes(x = Temp_soil, y = fit_observed), colour='black', size = 1) +
+            aes(x = Temp_soil, y = fit_observed), colour='black', linewidth = 1) +
   labs(x = "Soil temperature [°C]", y = "Observed MAGs") +
   theme_minimal()
 
@@ -235,22 +239,22 @@ c = ggplot() +
               alpha = 0.2, fill = 'dimgrey') +
   # median predicted line
   geom_line(data = pred_median, 
-            aes(x = Temp_soil, y = fit_invsimp), colour='black', size = 1) +
+            aes(x = Temp_soil, y = fit_invsimp), colour='black', linewidth = 1) +
   labs(x = "Soil temperature [°C]", y = "Inverted Simpson") +
   theme_minimal()
 
 panel_right = ggarrange(a, c, b, nrow = 3, ncol = 1, labels = c('B', 'C', 'D'))
 both = ggarrange(panel_left, panel_right, widths = c(0.7, 0.3), ncol = 2, nrow = 1, labels = c('A', ''))
-ggsave(filename = 'figures/Figure2.pdf', plot = both, width = 12, height = 8)
+save_fig(both, 'fig_alpha_mags', width = 12, height = 8)
 
 
 
-# 2.2 Temperature effect on alpha-diversity (16S amplicons)
+# 2.2b Temperature effect on alpha-diversity (16S amplicons, rarefied, 2024 samples)
 norm_table_cond = loaded_16s$rar_table
 metadata_2024 = metadata %>% filter(Year == 2024)
 norm_table_cond = norm_table_cond[,colnames(norm_table_cond) %in% metadata_2024$Sample]
 norm_table_cond <- norm_table_cond[, match(metadata_2024$Sample, colnames(norm_table_cond))]
-all(metadata_2024$Sample == colnames(norm_table_cond))
+stopifnot(all(metadata_2024$Sample == colnames(norm_table_cond)))
 
 shannon = vegan::diversity(t(norm_table_cond))
 invsimp = vegan::diversity(t(norm_table_cond), index = 'invsimpson')
@@ -261,23 +265,17 @@ metadata_2024$Observed_OTUs = obs
 metadata_2024$InvSimp_OTUs = invsimp
 
 metadata_2024$Replicate = as.factor(metadata_2024$Replicate)
-mod_shannon = gam(formula = Shannon_OTUS ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5) + Aspect, 
+mod_shannon = gam(formula = Shannon_OTUs ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5), 
                   data=metadata_2024)
-sink('stats/16s_gams_shannon_soiltemp.txt')
-summary(mod_shannon)
-sink()
+save_stat_text('03_alpha_16s_gam_shannon_soiltemp', summary(mod_shannon))
 
-mod_observed = gam(formula = Observed_OTUs ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5) + Aspect, 
+mod_observed = gam(formula = Observed_OTUs ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5), 
                    data=metadata_2024)
-sink('stats/16s_gams_obs_rich_soiltemp.txt')
-summary(mod_observed)
-sink()
+save_stat_text('03_alpha_16s_gam_observed_soiltemp', summary(mod_observed))
 
-mod_invsimp = gam(formula = InvSimp_OTUs ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5) + Aspect, 
+mod_invsimp = gam(formula = InvSimp_OTUs ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Temp_soil, bs='ts', k=5), 
                   data=metadata_2024)
-sink('stats/16s_gams_inv_simp_soiltemp.txt')
-summary(mod_invsimp)
-sink()
+save_stat_text('03_alpha_16s_gam_invsimpson_soiltemp', summary(mod_invsimp))
 
 # Plotting
 pred_grid <- expand.grid(
@@ -345,7 +343,7 @@ a = ggplot() +
               alpha = 0.2, fill = 'dimgrey') +
   # median predicted line
   geom_line(data = pred_median, 
-            aes(x = Temp_soil, y = fit_shannon), colour='black', size = 1) +
+            aes(x = Temp_soil, y = fit_shannon), colour='black', linewidth = 1) +
   labs(x = "Soil temperature [°C]", y = "Shannon Index") +
   theme_minimal()
 
@@ -361,7 +359,7 @@ b = ggplot() +
               alpha = 0.2, fill = 'dimgrey') +
   # median predicted line
   geom_line(data = pred_median, 
-            aes(x = Temp_soil, y = fit_observed), colour='black', size = 1) +
+            aes(x = Temp_soil, y = fit_observed), colour='black', linewidth = 1) +
   labs(x = "Soil temperature [°C]", y = "Observed OTUs") +
   theme_minimal()
 
@@ -376,23 +374,30 @@ c = ggplot() +
               alpha = 0.2, fill = 'dimgrey') +
   # median predicted line
   geom_line(data = pred_median, 
-            aes(x = Temp_soil, y = fit_invsimp), colour='black', size = 1) +
+            aes(x = Temp_soil, y = fit_invsimp), colour='black', linewidth = 1) +
   labs(x = "Soil temperature [°C]", y = "Inverted Simpson") +
   theme_minimal()
 
 panel_right = ggarrange(a, c, b, nrow = 3, ncol = 1, labels = c('B', 'C', 'D'))
 both = ggarrange(panel_left_16s, panel_right, widths = c(0.7, 0.3), ncol = 2, nrow = 1, labels = c('A', ''))
-ggsave(filename = 'figures/Figure_S??_alpha_16s.pdf', plot = both, width = 12, height = 8)
+save_fig(both, 'sfig_alpha_16s', width = 12, height = 8)
 
 
+################################################################################
+# 2.3 Specialists vs generalists (Levins niche width, permutation test)
+################################################################################
+# NOTE: `norm_table_cond` was re-assigned to the 16S (2024) table above, so the
+# `filter(Var2 %in% colnames(norm_table_cond))` below keeps only the 2024 samples.
+# Check that this restriction is intended.
+set.seed(GLOBAL_SEED)   # spec.gen uses 999 random permutations
+tab_spec = as.matrix(loaded_mags$raw_table)
+tab_spec = tab_spec * (1/min(tab_spec[tab_spec > 0]))
+tab_spec = apply(tab_spec, 2, as.integer)
 
-
-
-###### SPEC.GEN ANALYSIS
-library(EcolUtils)
-lev <- spec.gen(t(norm_table_cond), n=999, niche.width.method = 'levins')
-table(lev$sign) # 26 Non Significant and 539 Specialists
+lev <- spec.gen(t(tab_spec), n=999, niche.width.method = 'levins')
+print(table(lev$sign)) # previous run: 17 Non Significant and 400 Specialists
 lev$MAG = rownames(loaded_mags$relab_table)
+save_stat_table(lev, '03_specialists_levins_specgen')
 
 spec_table = as.matrix(loaded_mags$relab_table) %>% melt() %>% filter(Var2 %in% colnames(norm_table_cond))
 spec_table$Spec = map_chr(spec_table$Var1, function(x) as.character(lev$sign[lev$MAG == x]))
@@ -406,10 +411,12 @@ spec_table_summary = spec_table %>% filter(Spec == 'SPECIALIST') %>% group_by(Va
 spec_table_summary$Replicate = as.factor(spec_table_summary$Replicate)
 mod_specialists = gam(formula = rel_ab ~ s(Days_Since_Start, k=5, bs = "ts") + s(Replicate, bs='re') + s(Soil_temp, bs='ts', k=5), 
                   data=spec_table_summary)
-summary(mod_specialists)
+save_stat_text('03_specialists_gam_soiltemp', summary(mod_specialists))
 
 
-###### RAC ANALYSIS
+################################################################################
+# 2.4 Rank-abundance curves (RAC) and soil temperature
+################################################################################
 relab_table = loaded_mags$relab_table[,colnames(loaded_mags$relab_table) %in% metadata$Sample]
 relab_table <- relab_table[, match(metadata$Sample, colnames(relab_table))]
 all(metadata$Sample == colnames(relab_table))
@@ -444,6 +451,10 @@ boot_spearman <- function(df, n_boot = 1000) {
 
 n_samples <- n_distinct(rad_df$Sample)
 
+# Rank-wise bootstrap (1000 resamples) of Spearman's rho between the log relative
+# abundance of the MAG at a given rank and soil temperature; only ranks present
+# in >= 50% of the samples are kept.
+set.seed(GLOBAL_SEED)
 rank_boot <- rad_df %>%
   group_by(Rank) %>%
   filter(n_distinct(Sample) >= 0.5 * n_samples) %>%
@@ -458,14 +469,16 @@ rank_boot <- rad_df %>%
   }) %>%
   ungroup()
 
-ggplot(rank_boot, aes(x = Rank, y = rho)) +
+save_stat_table(rank_boot, '03_rac_bootstrap_spearman_by_rank')
+
+p_rac_boot <- ggplot(rank_boot, aes(x = Rank, y = rho)) +
   geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
   geom_ribbon(
     aes(ymin = lower, ymax = upper),
     fill = "grey80",
     alpha = 0.6
   ) +
-  geom_line(size = 1) +
+  geom_line(linewidth = 1) +
   geom_point(size = 2) +
   labs(
     x = "Rank (within sample)",
@@ -473,45 +486,11 @@ ggplot(rank_boot, aes(x = Rank, y = rho)) +
     title = "Rank-wise temperature response"
   ) +
   theme_classic()
-ggsave('figures/SuppFigure3_RAC.pdf')
+p_rac_boot
+save_fig(p_rac_boot, 'sfig_rac_bootstrap_rho', width = 7, height = 7)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Compute relative abundance and rank per sample
-rad_df <- rad_df %>%
-  group_by(Sample) %>% filter(Abundance > 0) %>%
-  mutate(
-    rel_abund = Abundance / sum(Abundance),
-    Rank = rank(-rel_abund, ties.method = "first"),
-    log_rel_abund = log10(rel_abund + 1e-6)   # log scale for plotting
-  ) %>%
-  ungroup()
-
+# (rad_df already holds rel_abund / Rank / log_rel_abund from above)
 rad_df$Condition = factor(rad_df$Condition, levels = c('control', 'warming'))
 # GAM with smooth for Rank, separate by Condition, random effect for Sample
 gam_model <- gam(
@@ -520,7 +499,7 @@ gam_model <- gam(
   data = rad_df
 )
 
-summary(gam_model)
+save_stat_text('03_rac_gam_summary', summary(gam_model))
 
 pred_out <- predict(
   gam_model,
@@ -543,7 +522,7 @@ rad_summary <- rad_df %>%
 
 pA <- ggplot(rad_summary, aes(x = Rank, y = median_pred, color = Condition, fill = Condition)) +
   geom_point(rad_df, mapping = aes(x = Rank, y = log_rel_abund, color = Condition), alpha=0.01) +
-  geom_line(size = 1.2) +
+  geom_line(linewidth = 1.2) +
   geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
   labs(
     x = "Rank",
@@ -559,10 +538,11 @@ diff <- difference_smooths(
   n = 200
 )
 diff
+save_stat_table(diff, '03_rac_gam_difference_smooths')
 
 # Plot Panel B with IQR ribbon
 pB <- ggplot(diff, aes(x = Rank, y = -.diff)) +
-  geom_line(size = 1.2, color = "purple") +
+  geom_line(linewidth = 1.2, color = "purple") +
   geom_ribbon(aes(ymin = -.lower_ci, ymax = -.upper_ci), alpha = 0.2, fill = "violet") +
   geom_hline(yintercept = 0, linetype = "dashed") +
   labs(
@@ -571,31 +551,19 @@ pB <- ggplot(diff, aes(x = Rank, y = -.diff)) +
   ) +
   theme_classic()
 
-ggarrange(pA, pB, ncol = 2, nrow = 1, labels = c("A", "B"), common.legend = T)
-ggsave(filename = 'figures/SuppFigure_RAC.pdf', width = 8, height = 6)
+p_rac_gam <- ggarrange(pA, pB, ncol = 2, nrow = 1, labels = c("A", "B"), common.legend = T)
+p_rac_gam
+save_fig(p_rac_gam, 'sfig_rac_gam', width = 8, height = 6)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# 2.2 Seasonal effect on alpha-diversity
+################################################################################
+# 2.5 Seasonal and yearly variation of alpha diversity (control plots only)
+################################################################################
 min_non_zero = min(loaded_mags$raw_table[loaded_mags$raw_table > 0])
 norm_table = as.data.frame(lapply(loaded_mags$raw_table , function(x) as.integer(x / min_non_zero)))
 norm_table = norm_table[,colnames(norm_table) %in% metadata_timeseries$Sample]
 norm_table <- norm_table[, match(metadata_timeseries$Sample, colnames(norm_table))]
-all(metadata_timeseries$Sample == colnames(norm_table))
+stopifnot(all(metadata_timeseries$Sample == colnames(norm_table)))
 
 shannon = vegan::diversity(t(norm_table))
 invsimp = vegan::diversity(t(norm_table), index = 'invsimpson')
@@ -605,27 +573,20 @@ metadata_timeseries$Shannon_MAGs = shannon
 metadata_timeseries$Observed_MAGs = obs
 metadata_timeseries$InvSimp_MAGs = invsimp
 
-ggplot(metadata_timeseries, aes(x=Days_Since_Start, y=Shannon_MAGs)) + geom_point() + geom_smooth()
-ggplot(metadata_timeseries, aes(x=Days_Since_Start, y=Observed_MAGs)) + geom_point() + geom_smooth()
-ggplot(metadata_timeseries, aes(x=Days_Since_Start, y=InvSimp_MAGs)) + geom_point() + geom_smooth()
+# (quick exploratory look at the raw trajectories, not part of the paper)
+# ggplot(metadata_timeseries, aes(x=Days_Since_Start, y=Shannon_MAGs)) + geom_point() + geom_smooth()
 
 mod_shannon = gam(formula = Shannon_MAGs ~ s(DOY, k=5, bs = "ts") + s(Replicate, bs='re') + Year + Aspect, 
                   data=metadata_timeseries)
-sink('stats/model_shannon_timeseries.txt')
-summary(mod_shannon)
-sink()
+save_stat_text('03_alpha_mags_gam_shannon_timeseries', summary(mod_shannon))
 
 mod_observed = gam(formula = Observed_MAGs ~ s(DOY, k=5, bs = "ts") + s(Replicate, bs='re') + Year + Aspect, 
                    data=metadata_timeseries)
-sink('stats/model_obs_rich_timeseries.txt')
-summary(mod_observed)
-sink()
+save_stat_text('03_alpha_mags_gam_observed_timeseries', summary(mod_observed))
 
 mod_invsimp = gam(formula = InvSimp_MAGs ~ s(DOY, k=5, bs = "ts") + s(Replicate, bs='re') + Year + Aspect, 
                    data=metadata_timeseries)
-sink('stats/model_inv_simp_timeseries.txt')
-summary(mod_invsimp)
-sink()
+save_stat_text('03_alpha_mags_gam_invsimpson_timeseries', summary(mod_invsimp))
 
 # PLOTTING 
 # Unique values
@@ -663,7 +624,7 @@ pred_observed <- get_median_pred(mod_observed, newdata)
 pred_invsimp <- get_median_pred(mod_invsimp, newdata)
 plot_median_spline <- function(pred_data, ylab_name) {
   ggplot(pred_data, aes(x = DOY, y = fit_median, color = as.factor(Year), fill = as.factor(Year))) +
-    geom_line(size = 1) +
+    geom_line(linewidth = 1) +
     geom_ribbon(aes(ymin = lwr_median, ymax = upr_median), alpha = 0.2, color = NA) +
     labs(x = "Day of Year", y = ylab_name, color = "Year", fill = "Year") +
     theme_minimal() +
@@ -673,8 +634,12 @@ plot_median_spline <- function(pred_data, ylab_name) {
 p_shannon <- plot_median_spline(pred_shannon, "Shannon Index")
 p_observed <- plot_median_spline(pred_observed, "Observed Richness")
 p_invsimp <- plot_median_spline(pred_invsimp, "Inverse Simpson")
-ggarrange(
+p_seasonal <- ggarrange(
   p_shannon, p_observed, p_invsimp,
   ncol = 1, nrow = 3,  # stack vertically
   common.legend = TRUE, legend = "right"
 )
+p_seasonal
+save_fig(p_seasonal, 'sfig_alpha_seasonal', width = 7, height = 9)
+
+save_session_info("03")
